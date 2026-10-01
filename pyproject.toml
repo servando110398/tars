@@ -8,11 +8,15 @@ dependencies = [
     "dbt-core>=1.12.5",
     "dbt-sqlserver>=1.11.2",
     "dlt[mssql]>=1.30.0",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.6",
+    "questionary>=2.1.1",
     "typer>=0.27.2",
+    "xlrd>=2.0.2",
 ]
 
 [project.scripts]
-tars = "tars:main"
+tars = "tars.main:app"
 
 [build-system]
 requires = ["uv_build>=0.8.24,<0.9.0"]

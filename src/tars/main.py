@@ -15,63 +15,127 @@ from rich.table import Table
 import questionary 
 import click 
 from dlt.destinations import mssql
-
-
+from rich.prompt import IntPrompt
+from rich.panel import Panel 
+VERSION = "1.0.0"
 APP_NAME = "TARS-de"
-app_dir = typer.get_app_dir(APP_NAME)
+app_dir = Path(typer.get_app_dir(APP_NAME))
 config_path: Path = Path(app_dir) / "config.json"
 flows_path: Path = Path(app_dir) / "flows.json"
-    
-app = typer.Typer(no_args_is_help=True)
+
+app = typer.Typer()
 console = Console()
+
+@app.callback(invoke_without_command=True)
+def main(ctx:typer.Context):
+    welcome()
+    ensure_files()
+
+    configs = get_settings(config_path)
+    flows = get_settings(flows_path)
+     
+    ctx.obj = {
+                "configs":configs,
+                "flows":flows,
+                "creds":""
+                }
+
+    if configs:
+        "extract server an db from here"
+        server , database = setup_connection()
+    else:    
+        server = typer.prompt("server ")
+        database = typer.prompt("database ")    
+
+    mssql_credentials = {
+                        "drivername": "mssql+pyodbc",
+                        "host": server,
+                        "database": database,
+                        "username": "",  # Set as empty string to pass dlt validation
+                        "password": "",  # Set as empty string to pass dlt validation
+                        "port": 1433,
+                        "driver": "ODBC Driver 18 for SQL Server",
+                        "query": {
+                                "Trusted_Connection": "yes", 
+                                 "TrustServerCertificate": "yes"
+                                }
+                        }
+    
+    ctx.obj["creds"] = mssql_credentials
+
+    _add_connection(server,database)
+
+
+
+def ensure_files():
+    app_dir.mkdir(parents=True, exist_ok=True)
+    for path in (config_path, flows_path):
+        if not path.exists():
+            path.write_text(json.dumps({}, indent=2))
+
 
 
 @app.command("init")
 def init():
-    server = typer.prompt("server: ")
-    database = typer.prompt("database: ")
-    key = hashlib.sha256(f"{server}:{database}".encode()).digest()
+    "Enter a new server and database connection"
+    server = typer.prompt("server ")
+    database = typer.prompt("database ")
+    _add_connection(server,database)
+    
 
+def _add_connection(server_name , database_name):
+    key = hashlib.sha256(f"{server_name}:{database_name}".encode()).hexdigest()
     new_connection = {
         key :{ 
-         "server": server , 
-         "database": database
+         "server": server_name , 
+         "database": database_name
         } 
     }
     current_content = get_settings(config_path) 
     return update_json(key,current_content,new_connection,config_path)
-
+    
 
 @app.command("use")
-def setup_connection():
-
-    current_settings = get_settings(config_path)  
+def setup_connection():  
+    "Choose a connection from saved configurations"
     current_settings_table = build_connections_table()
     console.print(current_settings_table)
     console.print("")
+    rows = list(zip(*(col.cells for col in current_settings_table.columns)))
 
-    connection_keys = list(current_settings.keys())
+    choice = IntPrompt.ask("Select a row", 
+                           choices=[str(i) for i in range(1, current_settings_table.row_count + 1)],
+                           )
+    row = rows[choice - 1]
 
-    selected_key = questionary.select(
-        "Choose a connection profile:",
-        choices=connection_keys
-    ).ask()
-
-    if selected_key:
-        return selected_key
+    server = row[0]
+    database = row[1]  
+    
+    if choice:
+        return server , database
     else:
         console.print("\n[red]No connection selected.[/red]")
 
 
-@app.command("inspect settings")
+@app.command("inspect-connections")
 def check_current_setup():
+    "See available saved database connections"
     connections = build_connections_table()
     console.print(connections)
 
-
+def welcome():
+    console.print(
+        Panel.fit(
+            f"[bold cyan]Welcome to {APP_NAME}[/]\n"
+            f"[dim]v{VERSION} · type [bold yellow]--help[/bold yellow] to get started[/dim]",
+            border_style="magenta",
+            padding=(1, 4),
+        )
+    )
 
 def get_settings(path: str)-> dict:
     if os.path.exists(path) and os.path.getsize(path) > 0:
+        print(path)
         with open(path, "r") as file:
             current_settings = json.load(file)
     else:
@@ -85,11 +149,9 @@ def build_connections_table():
     connections_table = Table(title="SQL Server Connections")
     connections_table.add_column("Server",style="magenta")
     connections_table.add_column("Database",justify="right",style="green")
-    
     current_content = get_settings(config_path)  
-    
     for connection in current_content.values():
-        connections_table.add_row(connection["server"],connection["table"])
+        connections_table.add_row(connection["server"],connection["database"])
 
     return connections_table
 
@@ -113,7 +175,7 @@ def build_flows_table():
 
 
 
-@app.command("load files")
+@app.command("load-files")
 def load_files(
         ctx:typer.Context,
         source_folder:Annotated[str,typer.Argument(help="Path to the folder containing the files to be loaded.")] ,
@@ -124,12 +186,11 @@ def load_files(
     """
     Load all files with the selected extension from the source folder into the target schema and table using the selected load strategy.
     """
-    creds = ctx.obj
+    creds = ctx.obj["creds"]
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     pipeline = dlt.pipeline(
             pipeline_name="file_to_mssql_pipeline",
-            #destination="mssql",
             destination=mssql(credentials=creds),
             dataset_name=schema_name  # This will map to a schema in SQL Server
         )
@@ -158,18 +219,17 @@ def load_files(
           file_path = source / file["relative_path"]
           new_file_name = f"{file_path.stem}__{timestamp}{file_path.suffix}"
           reader = ([file] | strategy[file_extension]()).with_name(table_name)
-          load_info , is_success = try_run_pipeline(pipeline, reader, load_strategy)
-          dest_path = archive_dir if is_success else failed_dir
-          rows = load_info.metrics['row_counts'][table_name]  
-          if is_success:
+
+          try:
+            load_info = pipeline.run(reader , load_strategy)
+            rows = load_info.metrics['row_counts'][table_name]
+            shutil.move(file_path, archive_dir / new_file_name)
             files_processed += 1
             total_rows = total_rows + rows
-          else:
-            failed_files += 1
+          except:
+                failed_files += 1
+                shutil.move(file_path, failed_dir / new_file_name)      
 
-          shutil.move(file_path, dest_path / new_file_name)
-
-    
     print(f"Processed files: {files_processed}")
     print(f"Total rows ingested: {total_rows}")
     print(f"Failed files: {failed_files}")
@@ -210,24 +270,22 @@ def load_file(ctx:typer.Context,
       
     reader = (file_source | read_csv()).with_name(table_name)
 
-    load_info , is_success = try_run_pipeline(pipeline, reader, load_strategy)
-    
-    dest_path = archive_dir if is_success else failed_dir
-    shutil.move(file_path, dest_path / new_file_name)
-    generate_message(load_info , is_success,pipeline,file_name)
-
-
-
-def generate_message(info , status_is_succes , pipeline , file_name,table_name):    
-    if status_is_succes:
-        total_rows = info.metrics['row_counts'][table_name]
+    try: 
+        load_info = pipeline.run(reader, write_disposition=load_strategy)
+        shutil.move(file_path,archive_dir/new_file_name)
+        total_rows = load_info.metrics['row_counts'][table_name]
         trace = pipeline.last_trace
         duration = trace.finished_at - trace.started_at
         seconds = duration.total_seconds()
-        print(f"[green]:white_check_mark: Done. File {file_name} has been processed. \n{total_rows} rows ingested in {seconds:.2f} seconds[/green]")
-    else:
-        print("[red]:x: load failed![/red]")
+        message = f"[green]:white_check_mark: Done. File {file_name} has been processed. \n{total_rows} rows ingested in {seconds:.2f} seconds[/green]" 
+    except:
+        shutil.move(file_path,failed_dir/new_file_name)
+        message = "[red]:x: load failed![/red]" 
+    finally:
+        print(message)
+        typer.Exit()
 
+   
 
 @dlt.transformer
 def read_excel(file_obj):
@@ -235,22 +293,15 @@ def read_excel(file_obj):
             # Read from the Excel file and yield its content as dictionary records.
             yield pd.read_excel(file).to_dict(orient="records")
 
+
 def setup_folders(source_folder):
     source = Path(source_folder)
     archive_dir = source / "Archive"
     failed_dir = source / "Failed"
     archive_dir.mkdir(exist_ok=True)
     failed_dir.mkdir(exist_ok=True)
-
     return archive_dir , failed_dir , source 
 
-
-def try_run_pipeline(pipeline, reader, load_strategy) -> bool:
-    try:
-        load_info = pipeline.run(reader, write_disposition=load_strategy)
-        return load_info , True
-    except Exception as e:
-        return load_info , False
 
 def update_json(new_entry_key:str , configs:dict , new_entry:dict,configs_path)->str:
     if new_entry_key in configs :
@@ -258,13 +309,15 @@ def update_json(new_entry_key:str , configs:dict , new_entry:dict,configs_path)-
         raise typer.Exit()
     else:
         configs.update(new_entry)
-        with open(configs_path,"w") as file:
+        with open(configs_path,"w",encoding="utf-8") as file:
                 json.dump(configs,file,indent=4)
+
         print("New connection setttings added successfully")
         return new_entry_key     
 
 
-@app.callback("flow")
+""" 
+@app.command("flow")
 def flow(ctx:typer.Context):
 
     if not get_settings():
@@ -299,22 +352,13 @@ def flow(ctx:typer.Context):
                     }
     }
 
-    creds = {
-       "host": server,
-      "database": database,
-      "username": "",
-      "password": "",
-      "driver": "ODBC Driver 18 for SQL Server",
-    } 
-
-    ctx.obj = creds
+  
+     creds = ctx.obj["creds"]
 
     load_files(folder,file_extension,table,schema,strategy)
 
-    
 
-
-    """prompt user if wants to save flow  """
+  
     response = typer.prompt("Would you like to save this flow?")
     if response == "Y":
         current_flow_config = get_settings(flows_path)
@@ -323,7 +367,8 @@ def flow(ctx:typer.Context):
         pass
         typer.exit()
 
-app.command("run flow")
+
+@app.command("run-flow")
 def run_existing_flow():
     flows = build_flows_table()
     console.print(flows)
@@ -342,7 +387,7 @@ def run_existing_flow():
     if selected_key:
         "run flow"
         current_flows[selected_keys]
-        
+
 
     else:
         "retry mechanism"
@@ -356,16 +401,7 @@ def run_existing_flow():
     "add a method to run available flows , print table and choose with arrows "
 
     
-
-
-
-
-
-
-
-
-
-
+"""
 
 
 if __name__ == "__main__":
