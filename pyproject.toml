@@ -1,0 +1,19 @@
+[project]
+name = "tars"
+version = "0.1.0"
+description = "File ingestion cli tool for data engineers"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "dbt-core>=1.12.5",
+    "dbt-sqlserver>=1.11.2",
+    "dlt[mssql]>=1.30.0",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+tars = "tars:main"
+
+[build-system]
+requires = ["uv_build>=0.8.24,<0.9.0"]
+build-backend = "uv_build"
