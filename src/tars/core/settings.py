@@ -11,7 +11,7 @@ APP_NAME = "TARS-de"
 app_dir = Path(typer.get_app_dir(APP_NAME))
 config_path: Path = Path(app_dir) / "config.json"
 flows_path: Path = Path(app_dir) / "flows.json"
-
+creds_path: Path = Path(app_dir)/ "creds.json"
 
 def ensure_files():
     app_dir.mkdir(parents=True, exist_ok=True)
@@ -51,5 +51,25 @@ def add_connection(server_name , database_name):
          "database": database_name
         }
     }
+
     current_content = get_settings(config_path)
     return update_json(key,current_content,new_connection,config_path)
+
+def add_credentials(server_name , database_name):
+    mssql_credentials = {
+                        "drivername": "mssql+pyodbc",
+                        "host": server_name,
+                        "database": database_name,
+                        "username": "",  # Set as empty string to pass dlt validation
+                        "password": "",  # Set as empty string to pass dlt validation
+                        "port": 1433,
+                        "driver": "ODBC Driver 18 for SQL Server",
+                        "query": {
+                                "Trusted_Connection": "yes",
+                                 "TrustServerCertificate": "yes"
+                                }
+                        }
+    with open(creds_path,"w",encoding="utf-8") as file:
+                    json.dump(mssql_credentials,file,indent=4)
+    
+    

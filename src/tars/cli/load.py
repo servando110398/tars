@@ -2,16 +2,15 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
-
 import dlt
 import typer
 from dlt.destinations import mssql
 from dlt.sources.filesystem import filesystem , read_csv
 from rich import print
-
 from tars.core.files import setup_folders
 from tars.core.readers import read_excel
 
+strategy ={"csv":read_csv, "xls":read_excel , "xlsx":read_excel}
 
 def load_files(
         ctx:typer.Context,
@@ -37,7 +36,6 @@ def load_files(
         file_glob=("*."+file_extension)  # Filter for specific file types if needed
         )
 
-    strategy ={"csv":read_csv, "xls":read_excel , "xlsx":read_excel}
 
     archive_dir , failed_dir , source  = setup_folders(source_folder=source_folder)
 
@@ -83,7 +81,8 @@ def load_file(ctx:typer.Context,
 
     print(f"Processing file : {file_name} ...")
 
-    creds = ctx.obj
+    creds = ctx.obj["creds"]
+    
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     pipeline = dlt.pipeline(
             pipeline_name="file_to_mssql_pipeline",
@@ -99,10 +98,13 @@ def load_file(ctx:typer.Context,
     file_glob=f"{file_name}*"# Add * to match the exact single file
     )
 
+
+    file_extension = Path(file_name).suffix[1:]
+
     file_path = source / file_source["relative_path"]
     new_file_name = f"{file_path.stem}__{timestamp}{file_path.suffix}"
 
-    reader = (file_source | read_csv()).with_name(table_name)
+    reader = (file_source |  strategy[file_extension]).with_name(table_name)
 
     try:
         load_info = pipeline.run(reader, write_disposition=load_strategy)

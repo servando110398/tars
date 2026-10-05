@@ -1,7 +1,7 @@
 import typer
 from rich.prompt import IntPrompt
 
-from tars.core.settings import add_connection
+from tars.core.settings import add_connection , add_credentials
 from tars.ui.display import build_connections_table, console
 
 
@@ -10,6 +10,7 @@ def init():
     server = typer.prompt("server ")
     database = typer.prompt("database ")
     add_connection(server,database)
+    add_credentials(server,database)
 
 
 def setup_connection():
@@ -37,3 +38,12 @@ def check_current_setup():
     "See available saved database connections"
     connections = build_connections_table()
     console.print(connections)
+
+def check_chosen_connection(ctx:typer.Context):
+    try:
+        creds = "No active target database found." if ctx.obj["creds"] is None else ctx.obj["creds"]
+        print(creds)
+    except:    
+        print("No credentials set up")
+        print("Please set up  db connection first")
+
